@@ -1,0 +1,51 @@
+version: "2"
+
+run:
+  timeout: 5m
+  go: "1.27"
+  tests: true
+  # Without this the build-tagged files under test/integration are never linted.
+  build-tags:
+    - integration
+
+linters:
+  default: none
+  enable:
+    - errcheck # unchecked error returns
+    - govet # stdlib vet
+    - staticcheck # comprehensive static analysis (also absorbs gosimple in v2)
+    - unused # unused constants, variables, functions, types
+    - ineffassign # ineffectual assignments
+    - misspell # spelling in comments and strings
+    - revive # golint replacement, style checks
+    - testifylint # testify misuse: arg order, assert-vs-require, error compares
+  settings:
+    revive:
+      rules:
+        - name: var-naming
+        - name: error-return
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+        - name: range
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: redefines-builtin-id
+  exclusions:
+    paths:
+      - vendor
+      - bin
+      - dist
+    rules:
+      - path: tools\.go
+        linters: [revive]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
