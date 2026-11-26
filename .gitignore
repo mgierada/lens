@@ -16,3 +16,8 @@ coverage.html
 http-client.private.env.json
 .cache/
 .grip/**
+
+
+# Added by cargo
+
+/target

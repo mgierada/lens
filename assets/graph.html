@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lens graph</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --text: #1d2330; --dim: #6b7385; --border: #dfe2e8;
+    --accent: #3b6fd8; --added: #2f9e5b; --modified: #c98a12; --deleted: #d0453b;
+    --moved: #3b8ed8; --broken: #d0453b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d; --panel: #1e2128; --text: #e3e6ee; --dim: #8d94a6; --border: #2c3039;
+      --accent: #7ea6ff; --added: #4cc47e; --modified: #e0a83a; --deleted: #f06a5f;
+      --moved: #6aaef5; --broken: #f06a5f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { display: grid; grid-template-rows: auto 1fr; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 8px 14px;
+    border-bottom: 1px solid var(--border); background: var(--panel); }
+  header h1 { font-size: 14px; margin: 0 8px 0 0; }
+  header .range { color: var(--dim); }
+  header label { color: var(--dim); display: inline-flex; gap: 4px; align-items: center; }
+  header input[type=search] { padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text); min-width: 200px; }
+  .segmented button { border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    padding: 3px 10px; cursor: pointer; }
+  .segmented button:first-child { border-radius: 6px 0 0 6px; }
+  .segmented button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+  .segmented button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  main { display: grid; grid-template-columns: 290px 1fr 360px; min-height: 0; }
+  aside { overflow: auto; padding: 10px 12px; background: var(--panel); min-height: 0; }
+  aside.left { border-right: 1px solid var(--border); }
+  aside.right { border-left: 1px solid var(--border); }
+  #graph { min-height: 0; }
+  .cluster { padding: 6px 8px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; }
+  .cluster:hover { background: var(--bg); }
+  .cluster.on { background: var(--bg); outline: 1px solid var(--accent); }
+  .cluster .t { font-weight: 600; }
+  .cluster .s, .dim { color: var(--dim); font-size: 12px; }
+  h2 { font-size: 14px; margin: 4px 0 6px; }
+  h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim);
+    margin: 14px 0 4px; }
+  ul { margin: 0; padding-left: 16px; }
+  li { margin: 2px 0; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .added { color: var(--added); } .modified { color: var(--modified); }
+  .deleted { color: var(--deleted); } .moved { color: var(--moved); }
+  .broken { color: var(--broken); font-weight: 600; }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; }
+  .swatch { width: 18px; height: 0; border-top: 2px solid; display: inline-block; }
+  .error { padding: 24px; color: var(--broken); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; grid-template-rows: auto 60vh auto; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>lens</h1><span class="range" id="range"></span>
+  <div class="segmented" id="view">
+    <button data-view="files" class="on">Files</button><button data-view="symbols">Symbols</button>
+  </div>
+  <label><input type="checkbox" id="tests" checked> tests</label>
+  <label><input type="checkbox" id="mentions" checked> mentions</label>
+  <label><input type="checkbox" id="shared"> shared tokens</label>
+  <input type="search" id="search" placeholder="Search symbols and files">
+  <span class="legend dim">
+    <span><i class="swatch" style="border-color:#8a90a0"></i>uses</span>
+    <span><i class="swatch" style="border-color:var(--accent);border-top-style:dashed"></i>mentions</span>
+    <span><i class="swatch" style="border-color:#8a90a0;border-top-style:dotted"></i>shared</span>
+    <span><i class="swatch" style="border-color:var(--broken);border-top-width:3px"></i>broken call</span>
+  </span>
+</header>
+<main>
+  <aside class="left" id="clusters"></aside>
+  <div id="graph"></div>
+  <aside class="right" id="details"><p class="dim">Click a node or cluster for details.</p></aside>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"
+  integrity="sha384-IWROdLKRsN1UuJywMlWl7/blXQ8GEooN2n7dzTxfEPd7ybYIKCUJ2Ol/1Gpf3YV4"
+  crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+const REPORT = /*LENS_REPORT*/null;
+const FOCUS = /*LENS_FOCUS*/null;
+
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const COLORS = {
+  added: css('--added'), modified: css('--modified'), deleted: css('--deleted'),
+  moved: css('--moved'), text: css('--text'), dim: css('--dim'), border: css('--border'),
+  accent: css('--accent'), broken: css('--broken'), bg: css('--bg'),
+};
+const state = { view: 'files', tests: true, mentions: true, shared: false, cluster: FOCUS };
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const base = path => path.split('/').pop();
+
+function symbolName(s) {
+  if (s.kind === 'file') return base(s.path);
+  if (s.kind === 'module') return base(s.path) + ' <module>';
+  return s.qualname;
+}
+
+function index(report) {
+  const clusterOf = {};
+  report.clusters.forEach(c => c.symbols.forEach(id => { clusterOf[id] = c.id; }));
+  const fileStatus = Object.fromEntries(report.files.map(f => [f.path, f.status]));
+  const impact = {};
+  report.clusters.forEach(c => c.impact.forEach(i => { (impact[i.target] ||= []).push(i); }));
+  const ownCommits = {};
+  report.hunks.forEach(h => h.symbols.forEach(id => {
+    h.commits.forEach(sha => { (ownCommits[id] ||= new Set()).add(sha); });
+  }));
+  const commit = Object.fromEntries(report.commits.map(c => [c.sha, c]));
+  return { clusterOf, fileStatus, impact, ownCommits, commit };
+}
+
+function linkClass(edge) {
+  if (edge.call_check && edge.call_check.status === 'broken') return 'broken';
+  if (edge.kind === 'mention') return 'mention';
+  if (edge.kind === 'shared') return 'shared';
+  return 'code';
+}
+
+function visibleSymbol(s) {
+  return state.tests || !s.is_test;
+}
+
+function visibleEdge(e) {
+  if (e.kind === 'shared') return state.shared;
+  if (e.kind === 'mention') return state.mentions;
+  return true;
+}
+
+function elements(report, idx) {
+  const nodes = [], edges = [];
+  report.clusters.forEach(c => nodes.push({ data: {
+    id: 'c' + c.id, type: 'cluster', cluster: c.id, label: `[${c.id + 1}] ${c.title}`,
+  } }));
+  const nodeOf = {};
+  if (state.view === 'files') {
+    const files = {};
+    report.symbols.filter(visibleSymbol).forEach(s => {
+      const cluster = idx.clusterOf[s.id];
+      const key = `f${cluster}:${s.path}`;
+      nodeOf[s.id] = key;
+      const file = files[key] ||= { id: key, path: s.path, cluster, symbols: [], test: true };
+      file.symbols.push(s.id);
+      file.test = file.test && s.is_test;
+    });
+    Object.values(files).forEach(f => {
+      const status = idx.fileStatus[f.path];
+      const change = status === 'added' ? 'added' : status === 'deleted' ? 'deleted' : 'modified';
+      const broken = f.symbols.some(id => report.symbols[id].broken_calls > 0);
+      nodes.push({ data: {
+        id: f.id, type: 'file', cluster: f.cluster, parent: 'c' + f.cluster, path: f.path,
+        symbols: f.symbols, label: `${base(f.path)} (${f.symbols.length})`, color: COLORS[change],
+        broken,
+      }, classes: f.test ? 'test' : '' });
+    });
+  } else {
+    report.symbols.filter(visibleSymbol).forEach(s => {
+      nodeOf[s.id] = 's' + s.id;
+      nodes.push({ data: {
+        id: 's' + s.id, type: 'symbol', symbol: s.id, parent: 'c' + idx.clusterOf[s.id],
+        label: symbolName(s), color: COLORS[s.change] || COLORS.dim, broken: s.broken_calls > 0,
+        shape: s.kind === 'file' ? 'round-rectangle' : s.kind === 'class' ? 'diamond' : 'ellipse',
+      }, classes: s.is_test ? 'test' : '' });
+    });
+  }
+  const merged = {};
+  report.edges.filter(visibleEdge).forEach(e => {
+    const from = nodeOf[e.from], to = nodeOf[e.to];
+    if (!from || !to || from === to) return;
+    const cls = linkClass(e);
+    const key = `${from}>${to}>${cls}`;
+    const edge = merged[key] ||= { from, to, cls, count: 0, via: new Set(), hub: e.hub };
+    edge.count += 1;
+    if (e.via) edge.via.add(e.via);
+  });
+  Object.entries(merged).forEach(([key, e]) => edges.push({ data: {
+    id: key, source: e.from, target: e.to, count: e.count,
+    label: [...e.via].slice(0, 2).join(', '),
+  }, classes: e.cls + (e.hub ? ' hub' : '') }));
+  return [...nodes, ...edges];
+}
+
+function styles() {
+  return [
+    { selector: 'node[type="cluster"]', style: {
+      shape: 'round-rectangle', 'background-color': COLORS.accent, 'background-opacity': 0.05,
+      'border-width': 1, 'border-color': COLORS.border, label: 'data(label)', color: COLORS.text,
+      'text-valign': 'top', 'text-halign': 'center', 'font-size': 13, 'font-weight': 600,
+      'text-margin-y': -4, padding: 18, 'text-wrap': 'ellipsis', 'text-max-width': 360,
+    } },
+    { selector: 'node[type="cluster"].focus', style: { 'border-color': COLORS.accent, 'border-width': 2 } },
+    { selector: 'node[type="file"], node[type="symbol"]', style: {
+      'background-color': 'data(color)', label: 'data(label)', color: COLORS.text, 'font-size': 10,
+      'text-valign': 'bottom', 'text-margin-y': 3, width: 16, height: 16,
+      'text-wrap': 'ellipsis', 'text-max-width': 160,
+    } },
+    { selector: 'node[type="file"]', style: { shape: 'round-rectangle', width: 22, height: 16 } },
+    { selector: 'node[type="symbol"]', style: { shape: 'data(shape)' } },
+    { selector: 'node[?broken]', style: { 'border-width': 3, 'border-color': COLORS.broken } },
+    { selector: 'node.test', style: { opacity: 0.55 } },
+    { selector: 'node.match', style: { 'border-width': 3, 'border-color': COLORS.accent } },
+    { selector: 'node:selected', style: { 'border-width': 3, 'border-color': COLORS.accent } },
+    { selector: 'edge', style: {
+      'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'arrow-scale': 0.8,
+      width: 'mapData(count, 1, 10, 1, 4)', 'line-color': COLORS.dim,
+      'target-arrow-color': COLORS.dim, opacity: 0.7, 'font-size': 9, color: COLORS.dim,
+    } },
+    { selector: 'edge.mention', style: {
+      'line-style': 'dashed', 'line-color': COLORS.accent, 'target-arrow-color': COLORS.accent,
+      label: 'data(label)',
+    } },
+    { selector: 'edge.shared', style: {
+      'line-style': 'dotted', 'target-arrow-shape': 'none', label: 'data(label)',
+    } },
+    { selector: 'edge.hub', style: { opacity: 0.25 } },
+    { selector: 'edge.broken', style: {
+      'line-color': COLORS.broken, 'target-arrow-color': COLORS.broken, width: 3, opacity: 1,
+    } },
+    { selector: 'edge:selected', style: { opacity: 1, width: 3 } },
+  ];
+}
+
+let cy, idx;
+
+function render() {
+  if (cy) cy.destroy();
+  cy = cytoscape({
+    container: document.getElementById('graph'),
+    elements: elements(REPORT, idx),
+    style: styles(),
+    layout: { name: 'cose', animate: false, nodeDimensionsIncludeLabels: true, padding: 30,
+      componentSpacing: 80, nodeRepulsion: () => 9000, idealEdgeLength: () => 70 },
+    wheelSensitivity: 0.25,
+  });
+  cy.on('tap', 'node', ev => select(ev.target));
+  if (state.cluster !== null) focusCluster(state.cluster);
+}
+
+function focusCluster(id) {
+  state.cluster = id;
+  cy.nodes('.focus').removeClass('focus');
+  const node = cy.getElementById('c' + id);
+  if (node.nonempty()) {
+    node.addClass('focus');
+    cy.animate({ fit: { eles: node, padding: 40 } }, { duration: 250 });
+  }
+  document.querySelectorAll('.cluster').forEach(el => el.classList.toggle('on', +el.dataset.id === id));
+  showCluster(REPORT.clusters[id]);
+}
+
+function select(node) {
+  const data = node.data();
+  if (data.type === 'cluster') return focusCluster(data.cluster);
+  if (data.type === 'file') return showFile(data);
+  return showSymbol(REPORT.symbols[data.symbol]);
+}
+
+function commitList(shas) {
+  if (!shas.length) return '';
+  const items = shas.map(sha => {
+    const c = idx.commit[sha];
+    return `<li><code>${esc(sha.slice(0, 8))}</code> ${esc(c ? c.summary : '')}</li>`;
+  });
+  return `<h3>Commits</h3><ul>${items.join('')}</ul>`;
+}
+
+function showCluster(c) {
+  const files = [...new Set(c.symbols.map(id => REPORT.symbols[id].path))];
+  const impact = c.impact.map(i => impactItem(i)).join('');
+  details(`<h2>${esc(c.title)}</h2><div class="dim">${esc(c.subtitle)}</div>
+    <h3>${c.symbols.length} changes in ${files.length} files</h3>
+    <ul>${files.map(f => `<li><code>${esc(f)}</code></li>`).join('')}</ul>
+    ${commitList(c.commits)}
+    ${c.impact_total ? `<h3>Unchanged referrers (${c.impact_total})</h3><ul>${impact}</ul>` : ''}`);
+}
+
+function showFile(data) {
+  const items = data.symbols.map(id => {
+    const s = REPORT.symbols[id];
+    return `<li><span class="${s.change}">${s.change}</span> ${esc(symbolName(s))}
+      ${s.broken_calls ? `<span class="broken">✗ ${s.broken_calls}</span>` : ''}</li>`;
+  });
+  details(`<h2>${esc(base(data.path))}</h2><div class="dim"><code>${esc(data.path)}</code></div>
+    <h3>Changes</h3><ul>${items.join('')}</ul>
+    <p class="dim">Switch to the Symbols view to see how these connect.</p>`);
+}
+
+function impactItem(i) {
+  const check = i.call_check && i.call_check.status === 'broken'
+    ? ` <span class="broken">✗ ${esc(i.call_check.reason)}</span>` : '';
+  const dangling = i.dangling ? ' <span class="broken">dangling</span>' : '';
+  return `<li><code>${esc(i.path)}:${i.line}</code> ${esc(i.qualname || '<module>')}${dangling}${check}</li>`;
+}
+
+function deltaLine(label, added, removed) {
+  const items = [...(added || []).map(a => `<span class="added">+${esc(a)}</span>`),
+    ...(removed || []).map(r => `<span class="deleted">-${esc(r)}</span>`)];
+  return items.length ? `<li><span class="dim">${label}:</span> ${items.join(', ')}</li>` : '';
+}
+
+function showSymbol(s) {
+  const range = s.head || s.base;
+  const sum = s.summary;
+  const summary = sum ? [
+    sum.signature.length ? `<li><span class="dim">signature:</span> ${sum.signature.map(c => esc(c.text)).join(' · ')}</li>` : '',
+    deltaLine('calls', sum.calls_added, sum.calls_removed),
+    deltaLine('uses', sum.uses_added, sum.uses_removed),
+    deltaLine('flow', sum.flow_added, sum.flow_removed),
+  ].join('') : '';
+  const out = REPORT.edges.filter(e => e.from === s.id), inc = REPORT.edges.filter(e => e.to === s.id);
+  const edgeItem = (e, other) => {
+    const o = REPORT.symbols[other];
+    const check = e.call_check && e.call_check.status === 'broken'
+      ? ` <span class="broken">✗ ${esc(e.call_check.reason)}</span>` : '';
+    return `<li>${esc(symbolName(o))} <span class="dim">${e.kind}${e.via ? ' ' + esc(e.via) : ''}</span>${check}</li>`;
+  };
+  details(`<h2>${esc(symbolName(s))}</h2>
+    <div><span class="${s.change}">${s.change}</span> <span class="dim">${s.kind}</span>
+      <code>${esc(s.path)}${range ? ':' + range.start : ''}</code></div>
+    ${s.moved_from ? `<div class="dim">moved from <code>${esc(s.moved_from.path)}:${esc(s.moved_from.qualname)}</code></div>` : ''}
+    ${s.signature ? `<div><code>${esc(s.signature)}</code></div>` : ''}
+    ${summary ? `<h3>What changed</h3><ul>${summary}</ul>` : ''}
+    ${s.broken_calls ? `<p class="broken">✗ ${s.broken_calls} call(s) no longer match the signature</p>` : ''}
+    ${out.length ? `<h3>Links to</h3><ul>${out.map(e => edgeItem(e, e.to)).join('')}</ul>` : ''}
+    ${inc.length ? `<h3>Linked from</h3><ul>${inc.map(e => edgeItem(e, e.from)).join('')}</ul>` : ''}
+    ${(idx.impact[s.id] || []).length ? `<h3>Unchanged referrers</h3><ul>${idx.impact[s.id].map(impactItem).join('')}</ul>` : ''}
+    ${commitList([...(idx.ownCommits[s.id] || [])])}`);
+}
+
+function details(html) {
+  document.getElementById('details').innerHTML = html;
+}
+
+function clusterList() {
+  document.getElementById('clusters').innerHTML = REPORT.clusters.map(c => `
+    <div class="cluster" data-id="${c.id}">
+      <div class="t">[${c.id + 1}] ${esc(c.title)}</div>
+      <div class="s">${esc(c.subtitle)} · ${c.symbols.length} changes${c.symbols.some(id => REPORT.symbols[id].broken_calls) ? ' · <span class="broken">✗</span>' : ''}</div>
+    </div>`).join('');
+  document.querySelectorAll('.cluster').forEach(el =>
+    el.addEventListener('click', () => focusCluster(+el.dataset.id)));
+}
+
+function search(text) {
+  cy.nodes('.match').removeClass('match');
+  const needle = text.trim().toLowerCase();
+  if (!needle) return;
+  const hits = cy.nodes().filter(n => n.data('type') !== 'cluster'
+    && String(n.data('label')).toLowerCase().includes(needle));
+  hits.addClass('match');
+  if (hits.nonempty()) cy.animate({ fit: { eles: hits, padding: 60 } }, { duration: 250 });
+}
+
+function init() {
+  if (!REPORT) return details('<p class="error">No report embedded.</p>');
+  if (typeof cytoscape === 'undefined') {
+    document.getElementById('graph').innerHTML =
+      '<p class="error">Could not load cytoscape.js from cdnjs (offline?).</p>';
+    return;
+  }
+  idx = index(REPORT);
+  document.getElementById('range').textContent =
+    `${REPORT.base.rev}...${REPORT.head.rev} · ${REPORT.stats.clusters} clusters · ${REPORT.stats.symbols} changes · +${REPORT.stats.additions} -${REPORT.stats.deletions}`;
+  clusterList();
+  document.querySelectorAll('#view button').forEach(b => b.addEventListener('click', () => {
+    state.view = b.dataset.view;
+    document.querySelectorAll('#view button').forEach(x => x.classList.toggle('on', x === b));
+    render();
+  }));
+  for (const key of ['tests', 'mentions', 'shared']) {
+    document.getElementById(key).addEventListener('change', ev => { state[key] = ev.target.checked; render(); });
+  }
+  document.getElementById('search').addEventListener('input', ev => search(ev.target.value));
+  render();
+}
+
+init();
+</script>
+</body>
+</html>
